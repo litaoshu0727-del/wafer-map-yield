@@ -8,7 +8,7 @@ import argparse
 from pathlib import Path
 
 from . import analysis, plots
-from .data import labeled, load_dataset
+from .data import load_labeled
 from .features import extract_features
 
 
@@ -18,11 +18,13 @@ def main() -> None:
     ap.add_argument("--out", default="reports")
     ap.add_argument("--max-wafers", type=int, default=None,
                     help="randomly sample this many labeled wafers (the full WM-811K takes a while)")
+    ap.add_argument("--all-records", action="store_true",
+                    help="keep repeat/retest records of the same wafers (dropped by default)")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
-    df = labeled(load_dataset(args.data))
+    df = load_labeled(args.data, args.all_records)
     if args.max_wafers and len(df) > args.max_wafers:
         df = df.sample(args.max_wafers, random_state=0).reset_index(drop=True)
     feats = extract_features(df)

@@ -102,6 +102,27 @@ def labeled(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["failureType"].isin(CLASSES)].reset_index(drop=True)
 
 
+def load_labeled(path: str | Path, all_records: bool = False) -> pd.DataFrame:
+    """Labeled wafers ready for analysis.
+
+    By default, lots that are a repeat or retest record of the previous lot's
+    wafers are dropped (see `wafermap.records`), so each physical wafer is
+    counted once. The tagging runs on the full dataset before the unlabeled
+    wafers are removed, because it compares neighbouring lots.
+    """
+    from .records import classify_lots
+
+    df = load_dataset(path)
+    if not all_records:
+        record = classify_lots(df)
+        kept = labeled(df[record == "first"])
+        dropped = len(labeled(df)) - len(kept)
+        print(f"dropped {dropped} labeled wafers in repeat/retest records "
+              f"({int((record != 'first').sum())} wafers in such records overall)")
+        return kept
+    return labeled(df)
+
+
 def resize(wmap: np.ndarray, size: int = 64) -> np.ndarray:
     """Nearest-neighbour resize, so the values stay exactly {0, 1, 2}."""
     h, w = wmap.shape

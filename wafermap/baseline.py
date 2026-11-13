@@ -9,7 +9,7 @@ import argparse
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 
-from .data import CLASS_TO_IDX, labeled, load_dataset
+from .data import CLASS_TO_IDX, load_labeled
 from .evaluate import score, split_indices
 from .features import FEATURE_COLUMNS, extract_features
 
@@ -20,9 +20,11 @@ def main() -> None:
     ap.add_argument("--out", default="reports")
     ap.add_argument("--max-wafers", type=int, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--all-records", action="store_true",
+                    help="keep repeat/retest records of the same wafers (dropped by default)")
     args = ap.parse_args()
 
-    df = labeled(load_dataset(args.data))
+    df = load_labeled(args.data, args.all_records)
     if args.max_wafers and len(df) > args.max_wafers:
         df = df.sample(args.max_wafers, random_state=args.seed).reset_index(drop=True)
     X = extract_features(df)[FEATURE_COLUMNS].to_numpy()

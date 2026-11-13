@@ -13,7 +13,7 @@ import torch
 from sklearn.metrics import f1_score
 from torch import nn
 
-from .data import CLASSES, labeled, load_dataset, to_arrays
+from .data import CLASSES, load_labeled, to_arrays
 from .evaluate import score, split_indices
 
 
@@ -84,12 +84,14 @@ def main() -> None:
                     help="0 = no class weighting, 1 = full inverse-frequency weighting")
     ap.add_argument("--max-wafers", type=int, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--all-records", action="store_true",
+                    help="keep repeat/retest records of the same wafers (dropped by default)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
-    df = labeled(load_dataset(args.data))
+    df = load_labeled(args.data, args.all_records)
     if args.max_wafers and len(df) > args.max_wafers:
         df = df.sample(args.max_wafers, random_state=args.seed).reset_index(drop=True)
     X_np, y_np = to_arrays(df, args.size)
