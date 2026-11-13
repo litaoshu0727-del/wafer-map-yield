@@ -18,6 +18,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", default="reports")
+    ap.add_argument("--name", default="baseline_rf", help="prefix for the output files")
     ap.add_argument("--max-wafers", type=int, default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--all-records", action="store_true",
@@ -34,7 +35,7 @@ def main() -> None:
     model = RandomForestClassifier(n_estimators=300, class_weight="balanced",
                                    random_state=args.seed, n_jobs=-1)
     model.fit(X[train], y[train])
-    score(y[test], model.predict(X[test]), args.out, "baseline_rf")
+    score(y[test], model.predict(X[test]), args.out, args.name, {"seed": args.seed})
 
     importance = pd.Series(model.feature_importances_, index=FEATURE_COLUMNS).sort_values(ascending=False)
     print("\nTop features:")

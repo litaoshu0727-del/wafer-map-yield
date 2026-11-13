@@ -64,11 +64,47 @@ def class_weights(y: np.ndarray, power: float) -> torch.Tensor:
 
 
 @torch.no_grad()
-def predict(model: nn.Module, X: torch.Tensor, device: str, batch_size: int = 512) -> np.ndarray:
+def predict_proba(model: nn.Module, X: torch.Tensor, device: str, batch_size: int = 512) -> np.ndarray:
+    """Softmax class probabilities, (N, n_classes)."""
     model.eval()
-    preds = [model(one_hot(X[i:i + batch_size].to(device))).argmax(1).cpu()
+    probs = [model(one_hot(X[i:i + batch_size].to(device))).softmax(1).cpu()
              for i in range(0, len(X), batch_size)]
-    return torch.cat(preds).numpy()
+    return torch.cat(probs).numpy()
+
+
+def predict(model: nn.Module, X: torch.Tensor, device: str, batch_size: int = 512) -> np.ndarray:
+    return predict_proba(model, X, device, batch_size).argmax(1)
+
+
+def pick_device() -> str:
+    return "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
+
+def subsample_lots(idx: np.ndarray, lots: np.ndarray, fraction: float, seed: int) -> np.ndarray:
+    """Keep the wafers of a random `fraction` of the lots in `idx`.
+
+    Whole lots are kept or dropped, which is how labelling budgets work in
+    practice: an engineer reviews a lot, not scattered wafers.
+    """
+    if fraction >= 1:
+        return idx
+    unique = np.unique(lots[idx])
+    rng = np.random.default_rng(seed)
+    keep = rng.choice(unique, size=max(1, round(fraction * len(unique))), replace=False)
+    return idx[np.isin(lots[idx], keep)]
+
+
+def splits(y: np.ndarray, lots: np.ndarray, seed: int):
+    """Train / validation / test indices, every lot on one side only.
+
+    Test lots are held out once. Validation lots, carved out of the training
+    lots, pick the best epoch, so the test score is never used for tuning.
+    The same seed always gives the same split, which pairs runs that differ
+    only in their settings.
+    """
+    fit, test = split_indices(y, lots, seed=seed)
+    tr, va = split_indices(y[fit], lots[fit], seed=seed + 1)
+    return fit[tr], fit[va], test
 
 
 def main() -> None:
@@ -83,13 +119,19 @@ def main() -> None:
     ap.add_argument("--weight-power", type=float, default=0.5,
                     help="0 = no class weighting, 1 = full inverse-frequency weighting")
     ap.add_argument("--max-wafers", type=int, default=None)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed", type=int, default=0, help="sets both the lot split and the model init")
+    ap.add_argument("--train-fraction", type=float, default=1.0,
+                    help="keep only this share of the training lots (labelling-budget experiments)")
+    ap.add_argument("--init", default=None,
+                    help="encoder weights from wafermap.pretrain to start from instead of random")
+    ap.add_argument("--encoder-lr-scale", type=float, default=1.0,
+                    help="learning-rate multiplier for the convolution blocks (e.g. 0.1 with --init)")
     ap.add_argument("--all-records", action="store_true",
                     help="keep repeat/retest records of the same wafers (dropped by default)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    device = pick_device()
 
     df = load_labeled(args.data, args.all_records)
     if args.max_wafers and len(df) > args.max_wafers:
@@ -97,20 +139,21 @@ def main() -> None:
     X_np, y_np = to_arrays(df, args.size)
     lots = df["lotName"].to_numpy()
 
-    # Test lots are held out once. A validation set, carved out of the training
-    # lots, picks the best epoch, so the test score is never used for tuning.
-    fit, test = split_indices(y_np, lots, seed=args.seed)
-    tr, va = split_indices(y_np[fit], lots[fit], seed=args.seed + 1)
-    train, val = fit[tr], fit[va]
+    train, val, test = splits(y_np, lots, args.seed)
+    train = subsample_lots(train, lots, args.train_fraction, args.seed)
     X, y = torch.from_numpy(X_np), torch.from_numpy(y_np)
     X_val, X_test = X[torch.from_numpy(val)], X[torch.from_numpy(test)]
 
     model = WaferCNN().to(device)
+    if args.init:
+        model.features.load_state_dict(torch.load(args.init, map_location=device))
     loss_fn = nn.CrossEntropyLoss(weight=class_weights(y_np[train], args.weight_power).to(device))
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt = torch.optim.Adam([{"params": model.features.parameters(), "lr": args.lr * args.encoder_lr_scale},
+                            {"params": model.head.parameters(), "lr": args.lr}])
     schedule = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     print(f"device={device}  train={len(train)}  val={len(val)}  test={len(test)}  "
-          f"weight_power={args.weight_power}", flush=True)
+          f"weight_power={args.weight_power}  train_fraction={args.train_fraction}  "
+          f"init={args.init or 'random'}", flush=True)
 
     train_t = torch.from_numpy(train)
     best_f1, best_epoch, best_state = -1.0, 0, None
@@ -134,8 +177,16 @@ def main() -> None:
 
     print(f"best epoch {best_epoch}  val macro-F1 {best_f1:.4f}")
     model.load_state_dict(best_state)
-    score(y_np[test], predict(model, X_test, device), args.out, args.name)
-    torch.save(best_state, Path(args.out) / f"{args.name}.pt")
+    val_proba, test_proba = predict_proba(model, X_val, device), predict_proba(model, X_test, device)
+    out = Path(args.out)
+    score(y_np[test], test_proba.argmax(1), out, args.name,
+          {"seed": args.seed, "weight_power": args.weight_power, "train_fraction": args.train_fraction,
+           "init": args.init or "random", "encoder_lr_scale": args.encoder_lr_scale, "n_train": int(len(train)), "best_epoch": best_epoch,
+           "val_macro_f1": float(best_f1)})
+    torch.save(best_state, out / f"{args.name}.pt")
+    # Kept so later analysis (confidence routing, error review, Grad-CAM) needs no retraining.
+    np.savez_compressed(out / f"{args.name}_pred.npz", val=val, val_proba=val_proba,
+                        test=test, test_proba=test_proba, lot=lots[test])
 
 
 if __name__ == "__main__":
