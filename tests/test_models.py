@@ -104,3 +104,39 @@ def test_budget_table_pairs_starts_by_seed(tmp_path):
     assert t.loc[0.1, (gain, "mean")] == pytest.approx(0.06)
     assert t.loc[0.1, (gain, "seeds_up")] == "2/2" and t.loc[1.0, (gain, "seeds_up")] == "1/2"
     assert t.loc[0.1, ("f1_mean", "random")] == pytest.approx(0.62)
+
+
+def test_pseudo_label_selection_keeps_confident_patterns_and_caps_none():
+    pytest.importorskip("torch")
+    from wafermap.pseudo import NONE, select_pseudo
+
+    pattern = probs(np.array([0.95, 0.95, 0.5]), [0, 3, 0])       # two confident patterns, one unsure
+    none = probs(np.full(20, 0.99), [NONE] * 20)
+    keep = select_pseudo(np.vstack([pattern, none]), confidence=0.9, none_ratio=3)
+    assert {0, 1} <= set(keep) and 2 not in keep
+    assert len(keep) == 2 + 6                                      # none capped at 3 per pattern wafer
+
+
+def test_mixed_loader_drops_duplicates_and_scores_combinations(tmp_path):
+    pytest.importorskip("torch")
+    from wafermap.mixed import LABELS, combo_names, combo_table, evaluate, load_mixed, split
+
+    rng = np.random.default_rng(0)
+    X = rng.integers(0, 3, (40, 52, 52)).astype(np.int32)
+    X[0, 0, 0] = 3                                   # stray value becomes a failing die
+    y = np.zeros((40, 8), dtype=np.int32)
+    y[:20, 0] = 1                                    # Center
+    y[10:30, 6] = 1                                  # Scratch, overlapping -> Center+Scratch
+    np.savez(tmp_path / "m.npz", np.concatenate([X, X[:5]]), np.concatenate([y, y[:5]]))
+    Xu, yu = load_mixed(tmp_path / "m.npz")
+    assert len(Xu) == 40 and Xu.max() == 2 and Xu[0, 0, 0] == 2
+    assert set(combo_names(yu)) == {"Center", "Center+Scratch", "Scratch", "none"}
+    train, val, test = split(yu, seed=0)
+    assert len(set(train) | set(val) | set(test)) == 40 and not set(train) & set(test)
+
+    proba = yu.astype(float)
+    proba[10:20, LABELS.index("Scratch")] = 0.1       # miss the scratch on every Center+Scratch wafer
+    scores = evaluate(yu, proba)
+    assert scores["exact_match"] == pytest.approx(0.75) and scores["exact_by_patterns"][2] == 0.0
+    worst = combo_table(yu, proba).iloc[0]
+    assert worst["combo"] == "Center+Scratch" and worst["most_common_error"] == "Center"

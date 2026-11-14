@@ -39,7 +39,7 @@ def unlabeled_wafers(path: str, size: int = 64, max_wafers: int | None = None, s
     df = df[~df["lotName"].isin(labeled_lots)]
     if max_wafers and len(df) > max_wafers:
         df = df.sample(max_wafers, random_state=seed)
-    print(f"pretraining wafers: {len(df)} from {df['lotName'].nunique()} unlabeled lots", flush=True)
+    print(f"unlabeled wafers: {len(df)} from {df['lotName'].nunique()} unlabeled lots", flush=True)
     return np.stack([resize(m, size) for m in df["waferMap"]])
 
 

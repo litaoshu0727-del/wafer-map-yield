@@ -107,6 +107,46 @@ def splits(y: np.ndarray, lots: np.ndarray, seed: int):
     return fit[tr], fit[va], test
 
 
+def fit(X: torch.Tensor, y: torch.Tensor, train: np.ndarray, val: np.ndarray, device: str, *,
+        epochs: int = 20, batch_size: int = 128, lr: float = 2e-3, weight_power: float = 0.5,
+        init: str | None = None, encoder_lr_scale: float = 1.0) -> tuple[nn.Module, int, float]:
+    """Train on `train`, keep the epoch with the best macro-F1 on `val`.
+
+    X is (N, H, W) uint8 and y (N,) class indices; `train` and `val` index
+    into them. Returns the model with its best weights loaded, the best
+    epoch and its validation macro-F1.
+    """
+    y_np = y.numpy()
+    model = WaferCNN().to(device)
+    if init:
+        model.features.load_state_dict(torch.load(init, map_location=device))
+    loss_fn = nn.CrossEntropyLoss(weight=class_weights(y_np[train], weight_power).to(device))
+    opt = torch.optim.Adam([{"params": model.features.parameters(), "lr": lr * encoder_lr_scale},
+                            {"params": model.head.parameters(), "lr": lr}])
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
+    train_t, X_val = torch.from_numpy(train), X[torch.from_numpy(val)]
+    best_f1, best_epoch, best_state = -1.0, 0, None
+    for epoch in range(1, epochs + 1):
+        model.train()
+        total = 0.0
+        for batch in train_t[torch.randperm(len(train_t))].split(batch_size):
+            xb, yb = augment(one_hot(X[batch].to(device))), y[batch].to(device)
+            opt.zero_grad()
+            loss = loss_fn(model(xb), yb)
+            loss.backward()
+            opt.step()
+            total += loss.item() * len(batch)
+        schedule.step()
+        val_f1 = f1_score(y_np[val], predict(model, X_val, device), labels=list(range(len(CLASSES))),
+                          average="macro", zero_division=0)
+        if val_f1 > best_f1:
+            best_f1, best_epoch, best_state = val_f1, epoch, copy.deepcopy(model.state_dict())
+        print(f"epoch {epoch:2d}  train loss {total / len(train_t):.4f}  val macro-F1 {val_f1:.4f}", flush=True)
+    print(f"best epoch {best_epoch}  val macro-F1 {best_f1:.4f}")
+    model.load_state_dict(best_state)
+    return model, best_epoch, float(best_f1)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--data", required=True)
@@ -144,45 +184,19 @@ def main() -> None:
     X, y = torch.from_numpy(X_np), torch.from_numpy(y_np)
     X_val, X_test = X[torch.from_numpy(val)], X[torch.from_numpy(test)]
 
-    model = WaferCNN().to(device)
-    if args.init:
-        model.features.load_state_dict(torch.load(args.init, map_location=device))
-    loss_fn = nn.CrossEntropyLoss(weight=class_weights(y_np[train], args.weight_power).to(device))
-    opt = torch.optim.Adam([{"params": model.features.parameters(), "lr": args.lr * args.encoder_lr_scale},
-                            {"params": model.head.parameters(), "lr": args.lr}])
-    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     print(f"device={device}  train={len(train)}  val={len(val)}  test={len(test)}  "
           f"weight_power={args.weight_power}  train_fraction={args.train_fraction}  "
           f"init={args.init or 'random'}", flush=True)
-
-    train_t = torch.from_numpy(train)
-    best_f1, best_epoch, best_state = -1.0, 0, None
-    for epoch in range(1, args.epochs + 1):
-        model.train()
-        total = 0.0
-        for batch in train_t[torch.randperm(len(train_t))].split(args.batch_size):
-            xb, yb = augment(one_hot(X[batch].to(device))), y[batch].to(device)
-            opt.zero_grad()
-            loss = loss_fn(model(xb), yb)
-            loss.backward()
-            opt.step()
-            total += loss.item() * len(batch)
-        schedule.step()
-
-        val_f1 = f1_score(y_np[val], predict(model, X_val, device), labels=list(range(len(CLASSES))),
-                          average="macro", zero_division=0)
-        if val_f1 > best_f1:
-            best_f1, best_epoch, best_state = val_f1, epoch, copy.deepcopy(model.state_dict())
-        print(f"epoch {epoch:2d}  train loss {total / len(train_t):.4f}  val macro-F1 {val_f1:.4f}", flush=True)
-
-    print(f"best epoch {best_epoch}  val macro-F1 {best_f1:.4f}")
-    model.load_state_dict(best_state)
+    model, best_epoch, best_f1 = fit(X, y, train, val, device, epochs=args.epochs, batch_size=args.batch_size,
+                                     lr=args.lr, weight_power=args.weight_power, init=args.init,
+                                     encoder_lr_scale=args.encoder_lr_scale)
+    best_state = model.state_dict()
     val_proba, test_proba = predict_proba(model, X_val, device), predict_proba(model, X_test, device)
     out = Path(args.out)
     score(y_np[test], test_proba.argmax(1), out, args.name,
           {"seed": args.seed, "weight_power": args.weight_power, "train_fraction": args.train_fraction,
            "init": args.init or "random", "encoder_lr_scale": args.encoder_lr_scale, "n_train": int(len(train)), "best_epoch": best_epoch,
-           "val_macro_f1": float(best_f1)})
+           "val_macro_f1": best_f1})
     torch.save(best_state, out / f"{args.name}.pt")
     # Kept so later analysis (confidence routing, error review, Grad-CAM) needs no retraining.
     np.savez_compressed(out / f"{args.name}_pred.npz", val=val, val_proba=val_proba,
