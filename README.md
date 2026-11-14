@@ -1,5 +1,19 @@
 # 晶圆图良率分析 (wafer-map-yield)
 
+**一句话**:用 81 万片真实晶圆的 bin map(WM-811K),定位良率损失、识别异常批次,并对比两种缺陷图案识别方法。
+
+| 做了什么 | 结果 |
+|---|---|
+| 把 10.1% 的良率损失拆成系统性和随机两部分 | 系统性 3.6%,随机 6.5%;边缘环状缺陷是最大的可识别损失来源 |
+| 找出多片晶圆出现相同缺陷图案的异常批次 | 7,251 个批次里 746 个,平均良率 80.9%,其他批次 87.1% |
+| 识别 9 类缺陷图案,按批次划分数据,5 个随机种子 | 随机森林 macro-F1 0.804,CNN 0.854 |
+| 低置信度的晶圆转人工复判 | 90% 自动判定,错误率 0.45%(全部自动判定时 2.8%) |
+| 逐片对比晶圆图,检查数据质量 | 发现约 26% 的批次是同一批晶圆的重复记录,数据集文档没有说明 |
+
+另有两个否定的结论:自监督预训练和伪标签都没有超过把有标注数据训练充分的模型。下面是完整的分析过程。
+
+![九类缺陷模式各一片真实晶圆,红色为失效 die](docs/gallery.png)
+
 用晶圆 bin map 回答三个问题:
 
 1. **良率损失在哪里?** 按中心/中环/边缘分区和径向分布定位失效 die。
@@ -11,8 +25,6 @@
 ## 真实数据结果 (WM-811K)
 
 数据:811,457 片晶圆、46,293 个 lot,其中 172,950 片有人工标注。以下分析只用有标注的部分,并去掉了重复记录(见下文"同一批晶圆的重复记录"),剩 170,684 片。
-
-![九类缺陷模式各一片真实晶圆,红色为失效 die](docs/gallery.png)
 
 **良率损失**
 
@@ -210,12 +222,39 @@ WM-811K 里连续的批次号经常是同一批晶圆在后续测试步骤的再
 - 默认去掉这些记录,否则同一片晶圆会被数两次,还可能同时出现在训练集和测试集。加 `--all-records` 可以保留它们。
 - 去掉前后对比:excursion 批次从 913 个降到 746 个(Center 主导的从 291 降到 158),其余结论不变,随机森林从 0.815 到 0.811,CNN 从 0.857 到 0.861。
 
+**这些结论依赖我定的阈值吗?**
+
+有两组阈值是我凭判断定的,没有标准答案:判定重复记录的四个阈值,和 excursion 规则的两个阈值。我把每个阈值单独在一个范围内变动,其余保持默认,重新统计主要数字(`wafermap/sensitivity.py`)。
+
+重复记录的判定几乎不受阈值影响:
+
+| 阈值(默认值) | 扫描范围 | 重复 + 复测批次数 | excursion 批次数 |
+|---|---|---|---|
+| 共同 slot 的比例(0.8) | 0.6 – 1.0 | 11,948 – 11,950 | 746,不变 |
+| 失效图的包含比例(0.9) | 0.8 – 1.0 | 11,618 – 11,953 | 745 – 758 |
+| "重复"要求的大小接近程度(0.8) | 0.6 – 0.9 | 11,655 – 12,099 | 737 – 751 |
+| "复测"要求的失效数比例(0.2) | 0.1 – 0.4 | 11,895 – 11,969 | 746,不变 |
+
+默认值下是 11,949 个批次(占 26%)。整个扫描范围内批次数的变动不超过 3%,被去掉的有标注晶圆在 2,065 – 2,410 片之间。原因是相邻批次要么几乎完全对得上,要么完全对不上,中间状态很少,所以阈值放在哪里差别不大。
+
+excursion 规则对阈值更敏感,主要是"最少晶圆数":
+
+| 最少标注晶圆数 | 同一图案占比 ≥ 20% | ≥ 30% | ≥ 40% | ≥ 50% |
+|---|---|---|---|---|
+| 3 片 | 1,105 | 1,013 | 991 | 974 |
+| 5 片 | 838 | **746** | 730 | 713 |
+| 10 片 | 594 | 504 | 489 | 473 |
+
+- 占比阈值从 30% 提到 50%,数量只少 4%:一个批次要么大部分晶圆都有同一图案,要么很少,所以这个阈值不敏感。
+- 最少晶圆数影响大:从 5 片改成 10 片,数量从 746 降到 504。所以"746 个"这个绝对数字取决于口径,不应单独引用。
+- 不随阈值改变的结论:excursion 占符合条件批次的 7% – 15%;主导图案始终是 Edge-Ring(占 42% – 76%);在符合条件的批次里,excursion 批次的平均良率比其他批次低 5.5 – 8.5 个百分点(默认口径下是 8.0)。
+
 ## 快速开始
 
 ```bash
 pip install -e ".[dev]"          # 基础依赖
 pip install -e ".[cnn]"          # 可选:PyTorch,只有 CNN 需要
-pytest                            # 17 项测试,其中 5 项需要 PyTorch
+pytest                            # 19 项测试,其中 5 项需要 PyTorch
 python -m wafermap.synthetic --out data/synthetic.pkl --n-lots 80
 python -m wafermap.report   --data data/synthetic.pkl --out reports
 python -m wafermap.baseline --data data/synthetic.pkl --out reports
@@ -231,6 +270,8 @@ python -m wafermap.baseline --data data/wm811k/LSWMD.pkl --out reports/wm811k_se
 python -m wafermap.seeds    --runs reports/wm811k_seeds
 # 转人工阈值、高置信度错例、Grad-CAM(--seed 要和训练时一致)
 python -m wafermap.diagnose --data data/wm811k/LSWMD.pkl --run reports/wm811k_seeds/cnn_w0.5_s0 --seed 0 --out reports/wm811k_diag
+# 阈值敏感性分析
+python -m wafermap.sensitivity --data data/wm811k/LSWMD.pkl --out reports/wm811k_sensitivity
 # 伪标签实验,和混合缺陷多标签分类(MixedWM38 在 Kaggle 上,解压到 data/mixedwm38/)
 python -m wafermap.pseudo   --data data/wm811k/LSWMD.pkl --out reports/wm811k_pseudo --name f0.1_s0 --seed 0 --train-fraction 0.1 --epochs 40
 python -m wafermap.mixed    --data data/mixedwm38/Wafer_Map_Datasets.npz --out reports/mixed --seed 0
@@ -257,6 +298,7 @@ python -m wafermap.export   --run reports/wm811k_seeds/cnn_w0.5_s0 --out models/
 | `wafermap/data.py` | 读取数据、统一字段、最近邻缩放 |
 | `wafermap/synthetic.py` | 生成与 WM-811K 同结构的合成晶圆 |
 | `wafermap/records.py` | 识别同一批晶圆的重复和复测记录 |
+| `wafermap/sensitivity.py` | 阈值敏感性分析:重复记录和 excursion 的阈值各扫一遍 |
 | `wafermap/features.py` | 每片晶圆的空间特征(分区失效率、径向/扇区分布、连通域) |
 | `wafermap/analysis.py` | 损失拆分、模式 Pareto、lot excursion、slot 良率 |
 | `wafermap/baseline.py` | 随机森林基线 + 特征重要性 |
@@ -286,7 +328,7 @@ python -m wafermap.export   --run reports/wm811k_seeds/cnn_w0.5_s0 --out models/
 数字来自上面的真实数据结果:
 
 - 基于 WM-811K(81 万片真实晶圆图,17.3 万片有标注)搭建良率分析流程,用分区失效率和连通域分析将 10.1% 的良率损失拆分为系统性 3.6% / 随机性 6.5%
-- 设计 lot 内缺陷模式共性规则,从 7,251 个 lot 中识别出 746 个 excursion 批次,其平均良率比正常批次低 6.2 个百分点
+- 设计 lot 内缺陷模式共性规则,从 7,251 个 lot 中识别出 746 个 excursion 批次,其平均良率比正常批次低 6.2 个百分点;并做了阈值敏感性分析,确认主导图案和良率差距的结论不随阈值改变
 - 对比 17 个可解释空间特征 + 随机森林与 CNN 两种缺陷模式分类方法,在 `none` 占 85% 的类别不平衡下,按 lot 分组划分、5 个随机种子的 macro-F1 分别为 0.804 ± 0.005 和 0.854 ± 0.005,CNN 在每个种子上都更好
 - 通过对照实验定位 CNN 误报的原因是类别权重过强,把权重从频率倒数改为其平方根后,macro-F1 从 0.76 提升到 0.85,Scratch 精确率从 0.30 提升到约 0.74
 - 设计置信度分流:阈值在验证集上选定,测试集上 90% 的晶圆可自动判定,错误率 0.45%(全部自动判定时为 2.8%),其余转人工复判

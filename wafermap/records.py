@@ -18,6 +18,7 @@ MIN_SHARED = 0.8  # share of slots the two lots must have in common, with identi
 NESTED = 0.9      # share of the smaller fail map that must lie inside the larger one
 SAME_SIZE = 0.8   # 'repeat': the two fail maps are at least this close in size
 FEW_FAILS = 0.2   # 'retest': under this fraction of the previous lot's fails
+DEFAULTS = {"min_shared": MIN_SHARED, "nested": NESTED, "same_size": SAME_SIZE, "few_fails": FEW_FAILS}
 
 
 def lot_number(lot_name: str) -> int:
@@ -25,11 +26,26 @@ def lot_number(lot_name: str) -> int:
     return int(digits) if digits else 0
 
 
-def relation(prev: dict[int, tuple], cur: dict[int, tuple]) -> str:
-    """How the lot `cur` relates to the lot numbered just before it: 'first', 'repeat' or 'retest'.
+def pair_stats(prev: dict[int, tuple], cur: dict[int, tuple]) -> dict[str, float]:
+    """The numbers the tagging rules look at, for one lot and the lot numbered just before it.
 
     Each lot is {slot: (die mask, fail mask)}. Only slots present in both lots
-    with an identical die layout are compared.
+    with an identical die layout are compared; `shared` is their share of the
+    smaller lot. Kept separate from the decision so that the thresholds can be
+    varied without going through the wafer maps again.
+    """
+    shared = [s for s in cur if s in prev and prev[s][0].shape == cur[s][0].shape
+              and np.array_equal(prev[s][0], cur[s][0])]
+    return {"shared": len(shared) / min(len(prev), len(cur)),
+            "n_die": sum(int(cur[s][0].sum()) for s in shared),
+            "fails_prev": sum(int(prev[s][1].sum()) for s in shared),
+            "fails_cur": sum(int(cur[s][1].sum()) for s in shared),
+            "overlap": sum(int((prev[s][1] & cur[s][1]).sum()) for s in shared)}
+
+
+def decide(stats: dict[str, float], min_shared: float = MIN_SHARED, nested: float = NESTED,
+           same_size: float = SAME_SIZE, few_fails: float = FEW_FAILS) -> str:
+    """'first', 'repeat' or 'retest' from the pair statistics.
 
     - 'repeat': almost the same fail map, usually with a few more fails. It
       reads as a later, cumulative snapshot of the same wafers.
@@ -37,33 +53,31 @@ def relation(prev: dict[int, tuple], cur: dict[int, tuple]) -> str:
       failed, or all of them. It reads as a record of only the dies that
       changed at a later step.
     """
-    shared = [s for s in cur if s in prev and prev[s][0].shape == cur[s][0].shape
-              and np.array_equal(prev[s][0], cur[s][0])]
-    if len(shared) < MIN_SHARED * min(len(prev), len(cur)):
+    if stats["shared"] < min_shared or stats["fails_prev"] == 0:
         return "first"
-    n_die = sum(int(cur[s][0].sum()) for s in shared)
-    fails_prev = sum(int(prev[s][1].sum()) for s in shared)
-    fails_cur = sum(int(cur[s][1].sum()) for s in shared)
-    overlap = sum(int((prev[s][1] & cur[s][1]).sum()) for s in shared)
+    fails_prev, fails_cur, overlap = stats["fails_prev"], stats["fails_cur"], stats["overlap"]
     small, large = min(fails_prev, fails_cur), max(fails_prev, fails_cur)
-    if fails_prev == 0:
-        return "first"
     # One map contains the other. Rule out wafers so full of fails that this happens by chance.
-    nested = small > 0 and overlap >= NESTED * small and large < 0.5 * n_die
-    if nested and small >= SAME_SIZE * large:
+    is_nested = small > 0 and overlap >= nested * small and large < 0.5 * stats["n_die"]
+    if is_nested and small >= same_size * large:
         return "repeat"
-    if fails_cur < FEW_FAILS * fails_prev and (overlap == 0 or nested):
+    if fails_cur < few_fails * fails_prev and (overlap == 0 or is_nested):
         return "retest"
     return "first"
 
 
-def classify_lots(df: pd.DataFrame) -> pd.Series:
-    """Tag every wafer's lot as 'first', 'repeat' or 'retest' (a Series aligned with `df`).
+def relation(prev: dict[int, tuple], cur: dict[int, tuple], **thresholds) -> str:
+    """How the lot `cur` relates to the lot numbered just before it: 'first', 'repeat' or 'retest'."""
+    return decide(pair_stats(prev, cur), **thresholds)
+
+
+def lot_pair_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """`pair_stats` for every lot whose number directly follows the previous lot's (index: lot name).
 
     Needs every wafer of the dataset, labeled or not, with the rows of a lot
     contiguous and lots in lot-number order, as in WM-811K.
     """
-    tags: dict[str, str] = {}
+    rows: dict[str, dict] = {}
     prev_seq, prev, cur_lot, cur = None, {}, None, {}
 
     def close() -> None:
@@ -71,7 +85,8 @@ def classify_lots(df: pd.DataFrame) -> pd.Series:
         if cur_lot is None:
             return
         seq = lot_number(cur_lot)
-        tags[cur_lot] = relation(prev, cur) if prev_seq is not None and seq == prev_seq + 1 else "first"
+        if prev_seq is not None and seq == prev_seq + 1:
+            rows[cur_lot] = pair_stats(prev, cur)
         prev_seq, prev = seq, cur
 
     for wmap, lot, slot in zip(df["waferMap"], df["lotName"], df["waferIndex"]):
@@ -80,4 +95,16 @@ def classify_lots(df: pd.DataFrame) -> pd.Series:
             cur_lot, cur = lot, {}
         cur[int(slot)] = (wmap > 0, wmap == 2)
     close()
-    return df["lotName"].map(tags).rename("record")
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def tag_lots(stats: pd.DataFrame, **thresholds) -> pd.Series:
+    """'repeat' / 'retest' / 'first' per lot in `stats`; lots not in `stats` are first records."""
+    return pd.Series([decide(row, **thresholds) for row in stats.to_dict("records")], index=stats.index,
+                     dtype=object)
+
+
+def classify_lots(df: pd.DataFrame, **thresholds) -> pd.Series:
+    """Tag every wafer's lot as 'first', 'repeat' or 'retest' (a Series aligned with `df`)."""
+    tags = tag_lots(lot_pair_stats(df), **thresholds)
+    return df["lotName"].map(tags).fillna("first").rename("record")

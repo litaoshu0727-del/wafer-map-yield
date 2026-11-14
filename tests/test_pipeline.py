@@ -105,3 +105,28 @@ def test_synthetic_lots_are_all_first_records():
     from wafermap.records import classify_lots
     df = make_dataset(n_lots=60, wafers_per_lot=25, seed=5)
     assert (classify_lots(df) == "first").all()
+
+
+def test_record_thresholds_can_be_varied_without_rereading_maps():
+    from wafermap.records import decide, tag_lots
+    import pandas as pd
+
+    # 85% of slots shared, current fails are 15% of the previous lot's, none on a die that already failed
+    stats = {"shared": 0.85, "n_die": 1000, "fails_prev": 100, "fails_cur": 15, "overlap": 0}
+    assert decide(stats) == "retest"
+    assert decide(stats, min_shared=0.9) == "first"      # not enough shared slots any more
+    assert decide(stats, few_fails=0.1) == "first"       # 15% is no longer "few"
+    tags = tag_lots(pd.DataFrame([stats, {**stats, "fails_cur": 95, "overlap": 93}], index=["a", "b"]))
+    assert tags.to_dict() == {"a": "retest", "b": "repeat"}
+
+
+def test_excursion_sweep_counts_follow_the_rule():
+    from wafermap.sensitivity import excursions, lot_table
+
+    df = make_dataset(n_lots=30, seed=3)
+    lots = lot_table(df)
+    assert lots["n_wafers"].sum() == len(df)
+    base = excursions(lots, 0.3, 5)
+    feats = extract_features(df)
+    assert base["excursions"] == int(analysis.lot_summary(df, feats)["excursion"].sum())
+    assert excursions(lots, 0.2, 5)["excursions"] >= base["excursions"] >= excursions(lots, 0.5, 5)["excursions"]
