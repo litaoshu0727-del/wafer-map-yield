@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from wafermap import analysis
@@ -130,3 +131,56 @@ def test_excursion_sweep_counts_follow_the_rule():
     feats = extract_features(df)
     assert base["excursions"] == int(analysis.lot_summary(df, feats)["excursion"].sum())
     assert excursions(lots, 0.2, 5)["excursions"] >= base["excursions"] >= excursions(lots, 0.5, 5)["excursions"]
+
+
+def test_commonality_counts_and_correction():
+    from wafermap.commonality import benjamini_hochberg, fisher_scan
+
+    routes = np.array([[0], [0], [0], [1], [1], [1], [1], [1]])
+    bad = np.array([1, 1, 1, 0, 0, 0, 0, 0], dtype=bool)
+    table = fisher_scan(routes, bad, n_tools=2).set_index("tool")
+    assert table.loc[0, ["lots", "bad_lots"]].tolist() == [3, 3]
+    assert table.loc[0, "p"] == pytest.approx(1 / 56)  # one way out of C(8, 3) to pick exactly those three
+    assert table.loc[1, "p"] == pytest.approx(1.0)
+    q = benjamini_hochberg(np.array([0.01, 0.04, 0.03, 0.5]))
+    assert q == pytest.approx([0.04, 0.04 * 4 / 3, 0.04 * 4 / 3, 0.5])
+
+
+def test_commonality_finds_a_planted_tool_and_only_that_one():
+    from wafermap.commonality import flagged, make_routes, plant, shift_scan
+
+    rng = np.random.default_rng(0)
+    bad = rng.random(3000) < 0.1
+    routes = make_routes(len(bad), rng)
+    assert not flagged(shift_scan(routes, bad, rng), "shift")
+    table = shift_scan(plant(routes, bad, step=3, tool=1, strength=0.5, rng=rng), bad, rng)
+    for method in ("fisher", "shift", "local"):
+        assert flagged(table, method) == {(3, 1)}
+
+
+def test_time_stratified_test_ignores_a_tool_that_only_ran_during_a_bad_stretch():
+    from wafermap.commonality import bad_runs, couple, make_routes, shift_scan
+
+    rng = np.random.default_rng(1)
+    bad = np.zeros(2000, dtype=bool)
+    bad[400:600] = True
+    routes = make_routes(len(bad), rng, n_steps=2, n_tools=3)
+    routes[:, 0] = np.where(bad, 2, routes[:, 0] % 2)  # tool 2 of step 0 ran exactly during the bad stretch
+    table = shift_scan(routes, bad, rng, n_tools=3).set_index(["step", "tool"])
+    assert table.loc[(0, 2), "q"] < 1e-6        # the lot-by-lot test is certain
+    assert table.loc[(0, 2), "z_local"] == 0    # inside each stretch of time there is nothing to compare
+    assert bad_runs(bad).tolist() == [200]
+    tied = couple(routes, 1.0, rng)
+    assert (tied[:, 1] == tied[:, 0]).all() and (routes[:, 1] != routes[:, 0]).any()
+
+
+def test_excursion_flags_match_the_excursion_count():
+    from wafermap.commonality import excursion_flags
+    from wafermap.sensitivity import excursions
+
+    lots = pd.DataFrame({"n_labeled": [10, 10, 4, 6], "top_count": [5, 2, 4, 2],
+                         "top_pattern": ["Center", "Loc", "Center", "Loc"], "mean_yield": [0.8, 0.9, 0.7, 0.9]},
+                        index=["a", "b", "c", "d"])
+    flags = excursion_flags(lots)
+    assert flags.to_dict() == {"a": True, "b": False, "d": True}
+    assert flags.sum() == excursions(lots)["excursions"]

@@ -84,3 +84,33 @@ def confusion(cm: np.ndarray, path: str | Path, title: str) -> Path:
     ax.set_title(title)
     fig.colorbar(im, ax=ax, fraction=0.046)
     return _save(fig, path)
+
+
+def commonality_figure(null: pd.DataFrame, power: pd.DataFrame, path: str | Path) -> Path:
+    """Left: false alarms with no guilty tool. Right: how often a planted tool is found."""
+    fig, (left, right) = plt.subplots(1, 2, figsize=(11.5, 3.9))
+    x = np.arange(len(null))
+    bars = [("fisher", "Fisher + BH", ALERT), ("shift", "shift-calibrated", "#a9bbd3"),
+            ("local", "shift-calibrated, time-stratified", "#1f3552")]
+    for i, (key, label, color) in enumerate(bars):
+        left.bar(x + 0.27 * (i - 1), 100 * null[f"{key}_false_alarm"], 0.25, color=color, label=label)
+    left.axhline(5, color="0.4", lw=1, ls="--")
+    left.text(-0.45, 7, "5% target", fontsize=8, color="0.3")
+    left.set_xticks(x, [f"{int(r)}" for r in null["run_length"]])
+    left.set_xlabel("mean lots in a row on the same tool (synthetic routes)")
+    left.set_ylabel("runs accusing an innocent tool (%)")
+    left.set_title("No guilty tool: false alarms", fontsize=10)
+    left.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3)
+
+    shades = ["#a9bbd3", "#4c6a92", "#1f3552"]
+    for shade, (lots, g) in zip(shades, power.groupby("lots")):
+        right.plot(100 * g["strength"], 100 * g["local_found"], marker="o", lw=2, color=shade,
+                   label=f"{lots:,} lots (~{g['mean_bad_lots'].iloc[0]:.0f} excursions)")
+    right.set_xlabel("share of excursion lots sent through the planted tool (%)")
+    right.set_ylabel("runs in which it is found (%)")
+    right.set_ylim(-3, 103)
+    right.set_title("One planted tool: detection by the time-stratified test", fontsize=10)
+    right.legend(frameon=False, fontsize=8)
+    for ax in (left, right):
+        ax.spines[["top", "right"]].set_visible(False)
+    return _save(fig, path)
