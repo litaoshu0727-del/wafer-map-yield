@@ -114,3 +114,25 @@ def commonality_figure(null: pd.DataFrame, power: pd.DataFrame, path: str | Path
     for ax in (left, right):
         ax.spines[["top", "right"]].set_visible(False)
     return _save(fig, path)
+
+
+def spatial_figure(lab: pd.DataFrame, path: str | Path) -> Path:
+    """Spread of the join-count z per labeled class (5th to 95th percentile, box = quartiles)."""
+    order = lab.groupby("label")["z"].median().sort_values().index.tolist()
+    fig, ax = plt.subplots(figsize=(7.5, 3.8))
+    for i, name in enumerate(order):
+        lo, q1, med, q3, hi = np.percentile(lab.loc[lab["label"] == name, "z"], [5, 25, 50, 75, 95])
+        color = "0.55" if name == "none" else BAR
+        ax.plot([lo, hi], [i, i], color=color, lw=1.5)
+        ax.barh(i, q3 - q1, left=q1, height=0.5, color=color)
+        ax.plot([med, med], [i - 0.25, i + 0.25], color="white", lw=2)
+    ax.axvline(1.645, color=ALERT, lw=1, ls="--")
+    ax.text(1.645, len(order) - 0.4, " 5% level", color=ALERT, fontsize=8, va="center")
+    ax.set_xscale("symlog", linthresh=5)
+    ax.set_xlim(-4, 60)
+    ax.set_xticks([-2, 0, 2, 5, 10, 20, 40], ["-2", "0", "2", "5", "10", "20", "40"])
+    ax.minorticks_off()
+    ax.set_yticks(range(len(order)), order)
+    ax.set_xlabel("join-count z: fail-fail neighbour pairs above chance, in standard deviations")
+    ax.spines[["top", "right"]].set_visible(False)
+    return _save(fig, path)

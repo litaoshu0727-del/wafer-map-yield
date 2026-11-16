@@ -184,3 +184,63 @@ def test_excursion_flags_match_the_excursion_count():
     flags = excursion_flags(lots)
     assert flags.to_dict() == {"a": True, "b": False, "d": True}
     assert flags.sum() == excursions(lots)["excursions"]
+
+
+def _round_wafer(size=30):
+    yy, xx = np.mgrid[0:size, 0:size]
+    return (np.hypot(xx - (size - 1) / 2, yy - (size - 1) / 2) < size / 2).astype(np.uint8)
+
+
+def test_join_count_on_a_hand_built_wafer():
+    from wafermap.spatial import join_count
+
+    wmap = np.ones((3, 3), dtype=np.uint8)
+    wmap[0, 0] = wmap[0, 1] = wmap[2, 2] = 2
+    out = join_count(wmap)
+    assert (out["joins"], out["fail_joins"]) == (12, 1)
+    assert out["expected"] == pytest.approx(12 * (3 * 2) / (9 * 8))  # each join is fail-fail with chance 3*2/(9*8)
+
+
+def test_join_count_z_is_standard_normal_for_random_fails_and_large_for_a_blob():
+    from wafermap.spatial import Z_CRIT, join_count, radial_z
+
+    rng = np.random.default_rng(0)
+    base = _round_wafer()
+    dies = np.flatnonzero(base)
+    z = []
+    for _ in range(1500):
+        wmap = base.copy()
+        wmap.flat[rng.choice(dies, 60, replace=False)] = 2
+        z.append(join_count(wmap)["z"])
+    z = np.array(z)
+    assert abs(z.mean()) < 0.1 and 0.9 < z.std() < 1.1
+    assert 0.02 < (z > Z_CRIT).mean() < 0.08
+
+    blob = base.copy()
+    blob[10:17, 10:18] = 2  # the same number of fails in one block
+    assert join_count(blob)["z"] > 20
+    assert radial_z(blob, rng) > 5
+
+
+def test_ring_shuffle_does_not_flag_a_plain_radial_gradient():
+    from wafermap.features import polar_grid
+    from wafermap.spatial import join_count, radial_z
+
+    rng = np.random.default_rng(1)
+    base = _round_wafer(40)
+    r, _ = polar_grid(base.shape)
+    plain, ringwise = [], []
+    for _ in range(60):
+        wmap = base.copy()
+        wmap[(base > 0) & (rng.random(base.shape) < 0.6 * r ** 4)] = 2  # fail rate rises towards the edge
+        plain.append(join_count(wmap)["z"])
+        ringwise.append(radial_z(wmap, rng, n_shuffles=100))
+    assert np.mean(plain) > 3          # uniform null: looks clustered
+    assert abs(np.mean(ringwise)) < 0.7  # null that knows the radial profile: nothing left
+
+
+def test_auc_counts_ties_as_half():
+    from wafermap.spatial import auc
+
+    assert auc(np.array([1, 2, 3, 4]), np.array([False, False, True, True])) == 1.0
+    assert auc(np.array([1, 1, 1, 1]), np.array([False, True, False, True])) == 0.5
