@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install PyTorch (CPU build)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Test (the PyTorch tests must run here, not be skipped)
+        run: |
+          python -c "import torch; print('torch', torch.__version__)"
+          pytest -q -rs
+      - name: Quick start on synthetic data
+        run: |
+          python -m wafermap.synthetic --out data/synthetic.pkl --n-lots 80
+          python -m wafermap.report --data data/synthetic.pkl --out reports
+          python -m wafermap.baseline --data data/synthetic.pkl --out reports
+          python -m wafermap.cnn --data data/synthetic.pkl --out reports --epochs 2
