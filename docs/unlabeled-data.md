@@ -1,6 +1,6 @@
 # 利用未标注晶圆的两次尝试:自监督预训练和伪标签
 
-[← 返回 README](../README.md)
+[← 返回 README](../README.zh-CN.md) · [English](en/unlabeled-data.md)
 
 两种方法在这个数据集上都没有超过把有标注的数据训练充分。
 

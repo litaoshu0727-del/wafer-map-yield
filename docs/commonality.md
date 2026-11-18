@@ -1,6 +1,6 @@
 # 机台共性分析:方法在这份数据上会不会误报?
 
-[← 返回 README](../README.md)
+[← 返回 README](../README.zh-CN.md) · [English](en/commonality.md)
 
 共性分析要回答的是:问题批次是不是比正常批次更多地经过了某一台机台。WM-811K 没有机台记录,所以这一步不能在真实数据上做。能检验的是方法本身(`wafermap/commonality.py`):
 

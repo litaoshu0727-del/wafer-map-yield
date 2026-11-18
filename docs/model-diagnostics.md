@@ -1,6 +1,6 @@
 # CNN 的诊断:类别权重、Grad-CAM、转人工、高置信度错例
 
-[← 返回 README](../README.md)
+[← 返回 README](../README.zh-CN.md) · [English](en/model-diagnostics.md)
 
 ## 类别权重对 CNN 的影响
 

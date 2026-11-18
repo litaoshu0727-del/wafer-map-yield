@@ -1,6 +1,6 @@
 # 混合缺陷:多标签分类(MixedWM38)
 
-[← 返回 README](../README.md)
+[← 返回 README](../README.zh-CN.md) · [English](en/mixed-defects.md)
 
 WM-811K 每片晶圆只有一个标签,但高置信度错例里(见[模型诊断](model-diagnostics.md))已经能看到两种图案叠在一起的晶圆。MixedWM38 是专门的混合缺陷数据集:38,015 片 52×52 的晶圆,每片最多同时有 4 种图案,共 38 种组合。模型还是同一个 CNN,只是把输出从 9 选 1 的 softmax 换成 8 个独立的 sigmoid,每个回答"有没有这种图案"。
 

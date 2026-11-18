@@ -1,6 +1,6 @@
 # 数据质量:重复记录和阈值敏感性
 
-[← 返回 README](../README.md)
+[← 返回 README](../README.zh-CN.md) · [English](en/data-quality.md)
 
 ## 同一批晶圆的重复记录
 
